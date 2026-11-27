@@ -7,6 +7,7 @@ on:
     branches: [main]
     paths:
       - 'deektator/**'
+      - 'tests/**'
       - '*.cmd'
       - '.github/workflows/windows-smoke.yml'
 
@@ -44,11 +45,16 @@ jobs:
               root.update()
               assert app.indicator.window
               assert api.foreground() == foreground
+              app.indicator.set_text("Transcribing...")
+              root.update()
+              assert api.foreground() == foreground
               app.transcribed("Clipboard check")
               assert root.clipboard_get() == "Clipboard check"
           finally:
               app.close()
           '@ | .\.venv\Scripts\python.exe -
+      - name: Check settings and transcription
+        run: .\.venv\Scripts\python.exe -m unittest discover -s tests -v
       - name: Transcribe a sample using the bundled Whisper executable
         run: |
           Invoke-WebRequest -Uri https://raw.githubusercontent.com/ggml-org/whisper.cpp/v1.8.3/samples/jfk.wav -OutFile sample.wav

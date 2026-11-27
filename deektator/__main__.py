@@ -30,6 +30,8 @@ def install_launcher(args, replace=True):
         command.append("--keep-fillers")
     if args.source:
         command += ["--source", args.source]
+    if args.threads is not None:
+        command += ["--threads", str(args.threads)]
     # Escape each argument for the Exec field before writing the key file.
     quoted = []
     for argument in command:
@@ -53,6 +55,16 @@ def install_launcher(args, replace=True):
     return launcher
 
 
+def positive_integer(value):
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be a positive integer") from None
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return number
+
+
 def main():
     windows = sys.platform == "win32"
     parser = argparse.ArgumentParser(description="Offline desktop dictation.")
@@ -61,6 +73,10 @@ def main():
     parser.add_argument("--whisper", help="path to whisper-cli")
     parser.add_argument("--language", default="en", help="Whisper language code or auto (default: en)")
     parser.add_argument("--keep-fillers", action="store_true", help="retain spoken fillers in English transcripts")
+    parser.add_argument(
+        "--threads", type=positive_integer,
+        help="CPU threads for transcription (default: automatic, up to 16)",
+    )
     if not windows:
         parser.add_argument("--keyboard", type=Path, help="read Alt + Super from this Linux keyboard event device")
     parser.add_argument("--source", help="Windows microphone index or name" if windows else "PulseAudio microphone source name")
@@ -74,7 +90,7 @@ def main():
     if not windows and args.install_launcher:
         print(f"Installed {install_launcher(args)}")
         return 0
-    engine = Whisper(args.whisper, args.model, args.language, not args.keep_fillers)
+    engine = Whisper(args.whisper, args.model, args.language, not args.keep_fillers, args.threads)
     if args.download_model:
         try:
             print(f"Downloading {engine.small_model} (190 MB)…", file=sys.stderr)

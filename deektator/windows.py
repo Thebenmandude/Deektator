@@ -5,14 +5,17 @@ import tempfile
 import threading
 import time
 import tkinter as tk
+from dataclasses import replace
 from pathlib import Path
 from tkinter import ttk
 
 import sounddevice
 
 from .engine import MAX_SECONDS, RELEASE_TAIL_MS, DictationError
+from .settings import load_settings, save_settings
 from .win32 import DesktopAPI, DictationChord, RecordingIndicator
 from .windows_audio import WindowsRecording, microphones
+from .windows_settings import SettingsDialog
 
 
 class Desktop:
@@ -20,13 +23,23 @@ class Desktop:
         self.root = root
         self.engine = engine
         self.args = args
+        self.api = api
         self.indicator = RecordingIndicator(api)
-        self.chord = None if args.manual else DictationChord(api.key_down)
+        self.settings, settings_error = load_settings()
+        if args.manual:
+            self.settings = replace(self.settings, enabled=False)
+        self.chord = DictationChord(api.key_down, self.settings) if self.settings.enabled else None
+        self.settings_dialog = None
         self.cancel = threading.Event()
         self.tasks = queue.SimpleQueue()
         self.recording = None
         self.record_source = None
+        self.paste_requested = False
         self.release_job = None
+        self.poll_job = None
+        self.indicator_job = None
+        self.paste_job = None
+        self.indicator_frame = 0
         self.processing = False
         self.last_text = ""
         self.indicator_error = False
@@ -41,12 +54,15 @@ class Desktop:
         main.columnconfigure(0, weight=1)
         main.rowconfigure(3, weight=1)
 
-        ttk.Label(main, text="Deektator", font=("Segoe UI", 20, "bold")).grid(sticky="w")
-        shortcut = (
-            "Hold Alt + Windows while speaking. Release to transcribe."
-            if self.chord else "Global shortcut is off."
-        )
-        ttk.Label(main, text=shortcut, wraplength=375).grid(sticky="w", pady=(2, 12))
+        heading = ttk.Frame(main)
+        heading.grid(sticky="ew")
+        heading.columnconfigure(0, weight=1)
+        ttk.Label(heading, text="Deektator", font=("Segoe UI", 20, "bold")).grid(row=0, column=0, sticky="w")
+        self.settings_button = ttk.Button(heading, text="Settings", command=self.open_settings)
+        self.settings_button.grid(row=0, column=1, sticky="e")
+        self.shortcut_text = tk.StringVar()
+        self.refresh_shortcut()
+        ttk.Label(main, textvariable=self.shortcut_text, wraplength=375).grid(sticky="w", pady=(2, 12))
 
         capture = ttk.LabelFrame(main, text="Microphone", padding=12)
         capture.grid(sticky="ew")
@@ -81,7 +97,38 @@ class Desktop:
         self.download_button.grid(row=0, column=1, padx=(8, 0))
         self.refresh_model()
         self.load_devices()
+        if settings_error:
+            self.status.set(settings_error)
         self.poll()
+
+    def refresh_shortcut(self):
+        self.shortcut_text.set(
+            f"Hold {self.settings.label} while speaking. Release to insert in the selected text box."
+            if self.chord else "Global shortcut is off. Enable it in Settings."
+        )
+
+    def open_settings(self):
+        if self.recording or self.processing:
+            return
+        if self.settings_dialog:
+            self.settings_dialog.lift()
+            return
+        if self.chord:
+            self.chord.reset()
+        self.settings_dialog = SettingsDialog(self.root, self.settings, self.apply_settings, self.settings_closed)
+
+    def apply_settings(self, settings):
+        save_settings(settings)
+        self.settings = settings
+        self.chord = DictationChord(self.api.key_down, settings) if settings.enabled else None
+        self.refresh_shortcut()
+        self.status.set("Settings saved.")
+
+    def settings_closed(self):
+        self.settings_dialog = None
+        if self.chord:
+            self.chord.reset()
+        self.settings_button.focus_set()
 
     def load_devices(self):
         try:
@@ -104,7 +151,7 @@ class Desktop:
             self.status.set(f"Microphone {self.args.source} was not found. Check the selected input.")
 
     def poll(self):
-        if self.chord:
+        if self.chord and self.settings_dialog is None:
             transition = self.chord.poll()
             if transition is True:
                 self.start("shortcut")
@@ -134,7 +181,7 @@ class Desktop:
                 self.refresh_model(result)
             else:
                 self.transcribed(result)
-        self.root.after(25, self.poll)
+        self.poll_job = self.root.after(25, self.poll)
 
     def toggle_recording(self):
         if self.recording:
@@ -143,8 +190,9 @@ class Desktop:
             self.start("button")
 
     def start(self, source):
-        if self.processing or self.recording:
+        if self.processing or self.recording or self.settings_dialog is not None:
             return
+        self.dismiss_indicator()
         selection = self.inputs.current()
         if selection < 0:
             self.status.set("Choose a microphone before recording.")
@@ -155,11 +203,13 @@ class Desktop:
             self.status.set(str(error))
             return
         self.record_source = source
+        self.paste_requested = True
         self.started = time.monotonic()
         self.indicator_error = False
         self.recording = WindowsRecording(sounddevice, self.devices[selection][0])
         self.level["value"] = 0
         self.inputs.configure(state="disabled")
+        self.settings_button.configure(state="disabled")
         self.record_button.configure(text="Stop recording")
         self.status.set("Opening microphone…")
 
@@ -172,10 +222,10 @@ class Desktop:
         recording, self.recording = self.recording, None
         self.record_source = None
         recording.stop.set()
-        self.indicator.close()
         self.processing = True
         self.record_button.configure(text="Start recording", state="disabled")
         self.status.set("Transcribing locally…")
+        self.show_transcribing()
 
         def transcribe():
             try:
@@ -188,15 +238,46 @@ class Desktop:
 
         threading.Thread(target=transcribe, name="transcription").start()
 
+    def show_transcribing(self):
+        if self.indicator_error:
+            return
+        try:
+            if not self.indicator.window:
+                self.indicator.show()
+            self.indicator_frame = 0
+            self.animate_indicator()
+        except OSError:
+            self.indicator_error = True
+            self.dismiss_indicator()
+
+    def animate_indicator(self):
+        if not self.processing or not self.indicator.window:
+            self.indicator_job = None
+            return
+        try:
+            self.indicator.set_text("Transcribing" + "." * (1 + self.indicator_frame % 3))
+        except OSError:
+            self.indicator_error = True
+            self.dismiss_indicator()
+            return
+        self.indicator_frame += 1
+        self.indicator_job = self.root.after(320, self.animate_indicator)
+
+    def dismiss_indicator(self):
+        if self.indicator_job is not None:
+            self.root.after_cancel(self.indicator_job)
+            self.indicator_job = None
+        self.indicator.close()
+
     def transcribed(self, result):
-        self.processing = False
-        self.record_button.configure(state="normal")
-        self.inputs.configure(state="readonly")
-        self.level["value"] = 0
         if isinstance(result, Exception):
+            self.paste_requested = False
             self.status.set(str(result))
+            self.finish_processing()
         elif not result:
+            self.paste_requested = False
             self.status.set("No speech detected. Check your microphone and try again.")
+            self.finish_processing()
         else:
             self.last_text = result
             self.preview.configure(state="normal")
@@ -204,7 +285,38 @@ class Desktop:
             self.preview.insert("1.0", result)
             self.preview.configure(state="disabled")
             self.copy_button.configure(state="normal")
-            self.copy_latest()
+            copied = self.copy_latest()
+            paste_requested, self.paste_requested = self.paste_requested, False
+            if copied and paste_requested:
+                # Let Tk publish the new clipboard contents before injecting the
+                # paste shortcut into whichever app has keyboard focus.
+                self.paste_job = self.root.after(25, lambda: self.paste_latest(result))
+            else:
+                self.finish_processing()
+
+    def paste_latest(self, text):
+        self.paste_job = None
+        try:
+            try:
+                current = self.root.clipboard_get()
+            except tk.TclError:
+                current = None
+            if current != text:
+                self.status.set("Clipboard changed before pasting. Transcript is still available to copy here.")
+            elif self.api.paste():
+                self.status.set("Paste command sent.")
+            else:
+                self.status.set("Copied to clipboard. Paste command failed; press Ctrl + V.")
+        finally:
+            self.finish_processing()
+
+    def finish_processing(self):
+        self.processing = False
+        self.record_button.configure(state="normal")
+        self.inputs.configure(state="readonly")
+        self.settings_button.configure(state="normal")
+        self.level["value"] = 0
+        self.dismiss_indicator()
 
     def copy_latest(self):
         try:
@@ -212,8 +324,10 @@ class Desktop:
             self.root.clipboard_append(self.last_text)
         except tk.TclError:
             self.status.set("Clipboard unavailable. Click Copy transcript to retry.")
+            return False
         else:
             self.status.set("Copied to clipboard.")
+            return True
 
     def refresh_model(self, error=None):
         model = self.engine.model
@@ -239,9 +353,12 @@ class Desktop:
 
     def close(self):
         self.cancel.set()
+        for job in (self.poll_job, self.release_job, self.paste_job):
+            if job is not None:
+                self.root.after_cancel(job)
         if self.recording:
             self.recording.stop.set()
-        self.indicator.close()
+        self.dismiss_indicator()
         self.root.destroy()
 
 
