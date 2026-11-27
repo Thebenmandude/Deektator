@@ -3,6 +3,7 @@ import os
 import sys
 from pathlib import Path
 
+from . import __version__
 from .engine import APP_ID, DictationError, Whisper
 
 
@@ -11,7 +12,8 @@ def install_launcher(args, replace=True):
 
     data_home = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
     launcher = data_home / "applications" / f"{APP_ID}.desktop"
-    if launcher.exists() and not replace:
+    packaged_launcher = Path("/usr/share/applications") / launcher.name
+    if not replace and (launcher.exists() or packaged_launcher.is_file()):
         return launcher
     executable = Path(__file__).resolve().parents[1] / "run-deektator"
     command = [str(executable)]
@@ -54,6 +56,7 @@ def install_launcher(args, replace=True):
 def main():
     windows = sys.platform == "win32"
     parser = argparse.ArgumentParser(description="Offline desktop dictation.")
+    parser.add_argument("--version", action="version", version=f"Deektator {__version__}")
     parser.add_argument("--model", type=Path, help="path to a whisper.cpp GGML model")
     parser.add_argument("--whisper", help="path to whisper-cli")
     parser.add_argument("--language", default="en", help="Whisper language code or auto (default: en)")

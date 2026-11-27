@@ -7,7 +7,16 @@ Deektator is an offline dictation app for **Windows** and **Fedora KDE Plasma on
 - **Choose your microphone** and see its input level while recording.
 - **Paste a cleaned-up transcript**, or keep spoken fillers for a more literal result.
 
-## Install on Windows
+## Install a release
+
+Download the package for your platform from [GitHub Releases](https://github.com/Thebenmandude/Deektator/releases).
+
+- **Windows x64**. Extract the ZIP and run `Deektator.exe`. Keep it in the extracted folder alongside `_internal`. The archive includes Python and Whisper. Install Microsoft's [x64 Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist/) if Whisper reports a missing runtime DLL. Use `deektator-cli.exe --version` or `deektator-cli.exe --help` from a terminal.
+- **Fedora 44 KDE x86_64 with AVX2**. Install the downloaded RPM with `sudo dnf install ./deektator-*.rpm`, then open **Deektator** from the application menu or run `deektator`.
+
+Choose **Download Small** on first launch to download the speech model. After that, dictation works offline. Each release includes SHA-256 checksums for its packages.
+
+## Run from source on Windows
 
 On 64-bit Windows 10 (version 1607 or later) or Windows 11, install [64-bit Python 3.11 or newer](https://www.python.org/downloads/windows/) with Tcl/Tk and add Python to PATH. Clone this repository or download and extract its ZIP. In PowerShell, run these commands from the project folder:
 
@@ -22,7 +31,7 @@ Keep Deektator open or minimized. Hold **Alt + Windows**, wait for the **Recordi
 
 The Windows launcher accepts the same model and language options as the Linux launcher. For example, `.\run-deektator.cmd --language auto --download-model` downloads the multilingual model, and `.\run-deektator.cmd --language auto` starts Deektator with language detection.
 
-## Install on Fedora KDE
+## Run from source on Fedora KDE
 
 Install the desktop and build dependencies, then clone Deektator.
 
@@ -79,3 +88,7 @@ Add `--install-launcher` to that command to save the keyboard choice in the desk
 ## Where your data goes
 
 Inference and text cleanup run on your machine. Deektator uses temporary files during capture and transcription, keeps the latest text in memory for re-copying, and writes the result to the system clipboard. Your desktop clipboard manager may retain copied text.
+
+## Release workflow
+
+GitHub Actions builds and tests both packages on pull requests to `main`. After each update to `main`, the workflow publishes both tested packages as one release with GitHub-generated notes. Tags use `v0.1.<workflow run number>` so reruns retain the same version. Pull request builds use run numbers too, so published versions can skip numbers.
