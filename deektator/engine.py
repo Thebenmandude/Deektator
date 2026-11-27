@@ -20,7 +20,11 @@ MAX_SECONDS = 120
 RELEASE_TAIL_MS = 140
 APP_ID = "io.github.deektator.Deektator"
 TOOLS = Path(__file__).resolve().parents[2] / "tools"
-DATA = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "deektator"
+if sys.platform == "win32":
+    DATA = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData/Local") / "Deektator"
+else:
+    DATA = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "deektator"
+WINDOWS_WHISPER = DATA / "whisper-cpu-1.8.3"
 MODELS = {
     "ggml-small.en-q5_1.bin": "bfdff4894dcb76bbf647d56263ea2a96645423f1669176f4844a1bf8e478ad30",
     "ggml-small-q5_1.bin": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
@@ -54,7 +58,11 @@ def clean_transcript(text, language, remove_fillers):
 
 class Whisper:
     def __init__(self, binary, model, language, remove_fillers):
-        bundled_binary = TOOLS / "whisper.cpp/build/bin/whisper-cli"
+        bundled_binary = (
+            WINDOWS_WHISPER / "whisper-cli.exe"
+            if sys.platform == "win32"
+            else TOOLS / "whisper.cpp/build/bin/whisper-cli"
+        )
         self.binary = binary or shutil.which("whisper-cli") or str(bundled_binary)
         self.custom_model = model
         self.small_model = "ggml-small.en-q5_1.bin" if language == "en" else "ggml-small-q5_1.bin"
@@ -109,7 +117,10 @@ class Whisper:
                 self.binary, "-m", str(self.model), "-f", str(audio), "-l", self.language,
                 "-nt", "-otxt", "-of", str(output), "-ng", "-sns", "-t", str(min(os.cpu_count() or 1, 4)),
             ]
-            with subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE) as process:
+            with subprocess.Popen(
+                command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            ) as process:
                 deadline = time.monotonic() + 300
                 while True:
                     if cancel.is_set() or time.monotonic() >= deadline:
@@ -158,10 +169,10 @@ def rms(samples):
     return math.sqrt(sum(sample * sample for sample in samples) / len(samples)) if samples else 0
 
 
-def normalize_quiet_audio(samples):
+def normalize_quiet_audio(samples, sample_rate=SAMPLE_RATE):
     peak = max(map(abs, samples), default=0)
     # Use several loud windows so a long pause or one transient has little weight.
-    window = SAMPLE_RATE // 10
+    window = sample_rate // 10
     levels = sorted(rms(samples[offset:offset + window]) for offset in range(0, len(samples), window))
     voice_level = levels[-min(3, len(levels))] if levels else 0
     if peak <= 32 or voice_level <= 16:
@@ -172,6 +183,21 @@ def normalize_quiet_audio(samples):
     if sys.byteorder != "little":
         samples.byteswap()
     return samples.tobytes()
+
+
+def write_recording(pcm, audio, sample_rate=SAMPLE_RATE):
+    samples = decode_samples(pcm)
+    if not samples:
+        raise DictationError("No audio arrived from the microphone. Choose another input or check its connection.")
+    if len(samples) < sample_rate // 4:
+        return None
+    audio_pcm = normalize_quiet_audio(samples, sample_rate)
+    if audio_pcm is None:
+        return None
+    with wave.open(str(audio), "wb") as wav:
+        wav.setparams((1, 2, sample_rate, 0, "NONE", "not compressed"))
+        wav.writeframes(audio_pcm)
+    return audio
 
 
 class Recording:
@@ -223,16 +249,4 @@ class Recording:
             raise DictationError(f"Could not record from the default microphone. {detail}".strip())
         with self.raw.open("rb") as capture:
             pcm = capture.read(MAX_SECONDS * SAMPLE_RATE * 2)
-        samples = decode_samples(pcm)
-        if not samples:
-            raise DictationError("No audio arrived from the microphone. Choose another input or check its connection.")
-        if len(samples) < SAMPLE_RATE // 4:
-            return None
-        pcm = normalize_quiet_audio(samples)
-        if pcm is None:
-            return None
-        audio = self.raw.with_suffix(".wav")
-        with wave.open(str(audio), "wb") as wav:
-            wav.setparams((1, 2, SAMPLE_RATE, 0, "NONE", "not compressed"))
-            wav.writeframes(pcm)
-        return audio
+        return write_recording(pcm, self.raw.with_suffix(".wav"))
