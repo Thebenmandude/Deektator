@@ -10,19 +10,19 @@ import urllib.request
 import zipfile
 from pathlib import Path, PurePosixPath
 
-from .engine import DATA, WINDOWS_WHISPER, DictationError, Whisper
+from .engine import WINDOWS_WHISPER, DictationError, Whisper
 
 
 RUNTIME_URL = "https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.3/whisper-bin-x64.zip"
 RUNTIME_SHA256 = "d824b1e37599f882b396e73f1ee0bfd5d0529f700314c48311dcbd00b803321d"
 
 
-def install_runtime():
-    executable = WINDOWS_WHISPER / "whisper-cli.exe"
+def install_runtime(destination=WINDOWS_WHISPER):
+    executable = destination / "whisper-cli.exe"
     if executable.is_file():
         return
-    DATA.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="runtime-", dir=DATA) as folder:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="runtime-", dir=destination.parent) as folder:
         archive = Path(folder) / "whisper.zip"
         print("Downloading the whisper.cpp CPU runtime…", flush=True)
         with urllib.request.urlopen(RUNTIME_URL, timeout=30) as response, archive.open("wb") as target:
@@ -35,13 +35,13 @@ def install_runtime():
         with zipfile.ZipFile(archive) as package:
             for member in package.namelist():
                 name = PurePosixPath(member).name
-                if name == executable.name or name.endswith(".dll"):
+                if name == executable.name or name == "whisper.dll" or (name.startswith("ggml") and name.endswith(".dll")):
                     with package.open(member) as source, (staging / name).open("wb") as target:
                         shutil.copyfileobj(source, target)
         if not (staging / executable.name).is_file():
             raise DictationError("The Whisper archive does not contain whisper-cli.exe.")
         try:
-            staging.rename(WINDOWS_WHISPER)
+            staging.rename(destination)
         except FileExistsError:
             if not executable.is_file():
                 raise

@@ -58,12 +58,15 @@ def clean_transcript(text, language, remove_fillers):
 
 class Whisper:
     def __init__(self, binary, model, language, remove_fillers):
-        bundled_binary = (
-            WINDOWS_WHISPER / "whisper-cli.exe"
-            if sys.platform == "win32"
-            else TOOLS / "whisper.cpp/build/bin/whisper-cli"
-        )
-        self.binary = binary or shutil.which("whisper-cli") or str(bundled_binary)
+        app_dir = Path(__file__).resolve().parents[1]
+        if sys.platform == "win32":
+            packaged = app_dir / "whisper" / "whisper-cli.exe"
+            fallback = WINDOWS_WHISPER / "whisper-cli.exe"
+        else:
+            packaged = app_dir / "whisper-cli"
+            fallback = TOOLS / "whisper.cpp/build/bin/whisper-cli"
+        installed = str(packaged) if packaged.is_file() else None
+        self.binary = binary or installed or shutil.which("whisper-cli") or str(fallback)
         self.custom_model = model
         self.small_model = "ggml-small.en-q5_1.bin" if language == "en" else "ggml-small-q5_1.bin"
         self.language = language

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Deektator
+Comment=Offline voice dictation
+Exec=deektator
+Icon=audio-input-microphone
+Categories=Utility;
+StartupWMClass=io.github.deektator.Deektator

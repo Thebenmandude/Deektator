@@ -1,0 +1,147 @@
+name: Build and release Deektator
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      number: ${{ steps.version.outputs.number }}
+    steps:
+      - id: version
+        run: echo "number=0.1.$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
+
+  windows:
+    runs-on: windows-latest
+    needs: version
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ needs.version.outputs.number }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Build the portable Windows ZIP
+        run: |
+          python -m pip install "pyinstaller==6.22.3" "sounddevice==0.5.6"
+          $env:PYTHONPATH = (Get-Location).Path
+          python packaging/windows/build.py "$env:VERSION" artifacts
+      - name: Test the unpacked Windows app
+        run: |
+          Expand-Archive "artifacts/Deektator-$env:VERSION-windows-x64.zip" smoke
+          $app = './smoke/Deektator/deektator-cli.exe'
+          if (-not (Test-Path './smoke/Deektator/Deektator.exe')) { throw "Missing desktop executable" }
+          $version = & $app --version
+          if ($LASTEXITCODE -ne 0 -or $version -ne "Deektator $env:VERSION") {
+            throw "Unexpected version: $version"
+          }
+          & $app --download-model
+          if ($LASTEXITCODE -ne 0) { throw "Model download failed" }
+          Invoke-WebRequest -Uri https://raw.githubusercontent.com/ggml-org/whisper.cpp/v1.8.3/samples/jfk.wav -OutFile sample.wav
+          $text = & $app --transcribe sample.wav
+          if ($LASTEXITCODE -ne 0 -or ($text -join ' ') -notmatch 'ask not what your country can do for you') {
+            throw "Unexpected transcript: $text"
+          }
+          $desktop = Start-Process './smoke/Deektator/Deektator.exe' -ArgumentList '--manual' -PassThru
+          try {
+            for ($attempt = 0; $attempt -lt 60; $attempt++) {
+              $desktop.Refresh()
+              if ($desktop.HasExited -or $desktop.MainWindowTitle -eq 'Deektator') { break }
+              Start-Sleep -Milliseconds 250
+            }
+            if ($desktop.HasExited -or $desktop.MainWindowTitle -ne 'Deektator') {
+              throw "The packaged desktop app did not open"
+            }
+          } finally {
+            if (-not $desktop.HasExited) { Stop-Process -Id $desktop.Id }
+          }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-package
+          path: artifacts/*.zip
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-latest
+    container: registry.fedoraproject.org/fedora:44
+    needs: version
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.version.outputs.number }}
+    steps:
+      - name: Install Fedora packaging tools
+        run: dnf -y install bash cmake curl desktop-file-utils gcc-c++ git gzip make rpm-build tar
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Build the Fedora RPM
+        run: bash packaging/linux/build.sh "$VERSION" artifacts
+      - name: Test the installed Fedora package
+        shell: bash
+        run: |
+          set -euo pipefail
+          dnf -y install ./artifacts/deektator-*.rpm
+          test "$(deektator --version)" = "Deektator $VERSION"
+          deektator --download-model
+          curl --fail --location --retry 3 https://raw.githubusercontent.com/ggml-org/whisper.cpp/v1.9.6/samples/jfk.wav -o sample.wav
+          text=$(deektator --transcribe sample.wav)
+          [[ "$text" == *"ask not what your country can do for you"* ]]
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-package
+          path: artifacts/*.rpm
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [version, windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.version.outputs.number }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: '*-package'
+          path: release-assets
+          merge-multiple: true
+      - name: Publish the versioned release and notes
+        working-directory: release-assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          tag="v$VERSION"
+          packages=(*.rpm *.zip)
+          [[ ${#packages[@]} == 2 ]]
+          sha256sum "${packages[@]}" > SHA256SUMS.txt
+
+          if tag_commit=$(gh api "repos/$GH_REPO/commits/$tag" --jq .sha 2>/dev/null); then
+            [[ "$tag_commit" == "$GITHUB_SHA" ]]
+          fi
+          if draft=$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [[ "$draft" == false ]]; then
+              gh release view "$tag" --json url --jq .url
+              exit 0
+            fi
+            [[ "$(gh release view "$tag" --json targetCommitish --jq .targetCommitish)" == "$GITHUB_SHA" ]]
+          else
+            gh release create "$tag" --draft --target "$GITHUB_SHA" --generate-notes \
+              --title "Deektator $tag"
+          fi
+          gh release upload "$tag" "${packages[@]}" SHA256SUMS.txt --clobber
+          gh release edit "$tag" --draft=false
