@@ -3,6 +3,8 @@
 import ctypes
 from ctypes import wintypes
 
+from .settings import MODIFIER_KEYS, SHORTCUT_KEYS, ShortcutSettings
+
 
 class MonitorInfo(ctypes.Structure):
     _fields_ = [
@@ -11,6 +13,27 @@ class MonitorInfo(ctypes.Structure):
         ("work", wintypes.RECT),
         ("flags", wintypes.DWORD),
     ]
+
+
+class KeyInput(ctypes.Structure):
+    _fields_ = [("virtual_key", wintypes.WORD), ("scan", wintypes.WORD),
+                ("flags", wintypes.DWORD), ("time", wintypes.DWORD),
+                ("extra_info", ctypes.c_size_t)]
+
+
+class MouseInput(ctypes.Structure):
+    _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG),
+                ("mouse_data", wintypes.DWORD), ("flags", wintypes.DWORD),
+                ("time", wintypes.DWORD), ("extra_info", ctypes.c_size_t)]
+
+
+class InputUnion(ctypes.Union):
+    # SendInput requires the full INPUT size, including its largest union member.
+    _fields_ = [("keyboard", KeyInput), ("mouse", MouseInput)]
+
+
+class Input(ctypes.Structure):
+    _fields_ = [("type", wintypes.DWORD), ("data", InputUnion)]
 
 
 def bind(library, name, result, *arguments):
@@ -28,6 +51,7 @@ class DesktopAPI:
 
         self.key_state = bind(user, "GetAsyncKeyState", wintypes.SHORT, integer)
         self.foreground = bind(user, "GetForegroundWindow", hwnd)
+        self.send_input = bind(user, "SendInput", uint, uint, ctypes.POINTER(Input), integer)
         self.monitor = bind(user, "MonitorFromWindow", handle, hwnd, dword)
         self.monitor_info = bind(user, "GetMonitorInfoW", boolean, handle, ctypes.POINTER(MonitorInfo))
         self.dpi = bind(user, "GetDpiForSystem", uint)
@@ -41,6 +65,7 @@ class DesktopAPI:
         self.set_opacity = bind(user, "SetLayeredWindowAttributes", boolean, hwnd, dword, wintypes.BYTE, dword)
         self.position = bind(user, "SetWindowPos", boolean, hwnd, hwnd, integer, integer, integer, integer, uint)
         self.destroy_window = bind(user, "DestroyWindow", boolean, hwnd)
+        self.set_window_text = bind(user, "SetWindowTextW", boolean, hwnd, wintypes.LPCWSTR)
         message = bind(user, "SendMessageW", wintypes.LPARAM, hwnd, uint, wintypes.WPARAM, wintypes.LPARAM)
         gdi = ctypes.WinDLL("gdi32", use_last_error=True)
         font = bind(gdi, "GetStockObject", handle, integer)(17)  # DEFAULT_GUI_FONT
@@ -49,21 +74,39 @@ class DesktopAPI:
     def key_down(self, key):
         return bool(self.key_state(key) & 0x8000)
 
+    def paste(self):
+        # Send Ctrl+V to the currently focused control. Clipboard text is set by
+        # the desktop before this call, so apps receive ordinary paste input.
+        events = (Input * 4)(
+            Input(1, InputUnion(keyboard=KeyInput(0x11, 0, 0, 0, 0))),
+            Input(1, InputUnion(keyboard=KeyInput(0x56, 0, 0, 0, 0))),
+            Input(1, InputUnion(keyboard=KeyInput(0x56, 0, 2, 0, 0))),
+            Input(1, InputUnion(keyboard=KeyInput(0x11, 0, 2, 0, 0))),
+        )
+        return self.send_input(len(events), events, ctypes.sizeof(Input)) == len(events)
+
 
 class DictationChord:
-    def __init__(self, key_down):
+    def __init__(self, key_down, settings=None):
         self.key_down = key_down
+        self.settings = settings or ShortcutSettings()
+        self.reset()
+
+    def reset(self):
         self.armed = False
         self.active = False
 
     def poll(self):
-        alt = self.key_down(0x12)  # VK_MENU
-        windows = self.key_down(0x5B) or self.key_down(0x5C)  # VK_LWIN, VK_RWIN
-        if not alt and not windows:
+        pressed = {name for name, keys in MODIFIER_KEYS.items() if any(self.key_down(key) for key in keys)}
+        required = set(self.settings.modifiers)
+        key_down = self.settings.key is not None and self.key_down(SHORTCUT_KEYS[self.settings.key])
+        if not pressed.intersection(required) and not key_down:
             self.armed = True
-        held = self.armed and alt and windows
+        held = self.settings.enabled and self.armed and pressed == required and (self.settings.key is None or key_down)
         if held != self.active:
             self.active = held
+            if not held:
+                self.armed = not pressed.intersection(required) and not key_down
             return held
         return None
 
@@ -101,6 +144,10 @@ class RecordingIndicator:
                 raise error
         # HWND_TOPMOST, SWP_NOACTIVATE | SWP_SHOWWINDOW.
         if not self.desktop.position(self.window, wintypes.HWND(-1), x, y, width, height, 0x0010 | 0x0040):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def set_text(self, value):
+        if self.window and not self.desktop.set_window_text(self.window, value):
             raise ctypes.WinError(ctypes.get_last_error())
 
     def close(self):

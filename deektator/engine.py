@@ -38,6 +38,12 @@ class DictationError(Exception):
     pass
 
 
+def transcription_threads():
+    available = os.cpu_count() or 1
+    # Keep the UI responsive on larger CPUs without limiting them to four threads.
+    return min(16, available, max(4, available - 2))
+
+
 def clean_transcript(text, language, remove_fillers):
     text = NON_SPEECH.sub("", text)
     if remove_fillers and language == "en":
@@ -57,7 +63,7 @@ def clean_transcript(text, language, remove_fillers):
 
 
 class Whisper:
-    def __init__(self, binary, model, language, remove_fillers):
+    def __init__(self, binary, model, language, remove_fillers, threads=None):
         app_dir = Path(__file__).resolve().parents[1]
         if sys.platform == "win32":
             packaged = app_dir / "whisper" / "whisper-cli.exe"
@@ -71,6 +77,28 @@ class Whisper:
         self.small_model = "ggml-small.en-q5_1.bin" if language == "en" else "ggml-small-q5_1.bin"
         self.language = language
         self.remove_fillers = remove_fillers
+        if threads is not None and (not isinstance(threads, int) or isinstance(threads, bool) or threads < 1):
+            raise ValueError("Transcription threads must be a positive integer.")
+        self.threads = transcription_threads() if threads is None else threads
+        self._cpu_flags = None
+
+    def cpu_flags(self):
+        if self._cpu_flags is None:
+            self._cpu_flags = []
+            # The Windows CPU runtime is faster without flash attention. Probe
+            # once so custom/older whisper-cli builds still work without the flag.
+            if sys.platform == "win32":
+                try:
+                    result = subprocess.run(
+                        [self.binary, "--help"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        timeout=3, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    )
+                except (OSError, subprocess.SubprocessError):
+                    pass
+                else:
+                    if result.returncode == 0 and b"--no-flash-attn" in result.stdout:
+                        self._cpu_flags = ["-nfa"]
+        return self._cpu_flags
 
     @property
     def model(self):
@@ -118,7 +146,7 @@ class Whisper:
             output = Path(tmp) / "transcript"
             command = [
                 self.binary, "-m", str(self.model), "-f", str(audio), "-l", self.language,
-                "-nt", "-otxt", "-of", str(output), "-ng", "-sns", "-t", str(min(os.cpu_count() or 1, 4)),
+                "-nt", "-otxt", "-of", str(output), "-ng", "-sns", "-t", str(self.threads), *self.cpu_flags(),
             ]
             with subprocess.Popen(
                 command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,

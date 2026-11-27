@@ -1,6 +1,6 @@
 # Deektator
 
-Deektator is an offline dictation app for **Windows** and **Fedora KDE Plasma on Wayland**. Hold a global shortcut while you speak, release it to transcribe, then paste the text into another app. Whisper runs locally on your CPU, with no account or API key required.
+Deektator is an offline dictation app for **Windows** and **Fedora KDE Plasma on Wayland**. Hold a global shortcut while you speak, then release it to transcribe. On Windows, Deektator pastes the result into the focused text box automatically. Whisper runs locally on your CPU, with no account or API key required.
 
 - **Hold to dictate** from another app, or start and stop recording from Deektator's window.
 - **See when the mic is live** with a bottom-of-screen recording indicator that leaves keyboard focus where it is.
@@ -27,7 +27,11 @@ On 64-bit Windows 10 (version 1607 or later) or Windows 11, install [64-bit Pyth
 
 Setup installs the microphone dependency and downloads the [whisper.cpp Windows CPU runtime](https://github.com/ggml-org/whisper.cpp/releases/tag/v1.8.3) and the English Whisper Small model. The runtime and models are stored in `%LOCALAPPDATA%\Deektator`. Once setup finishes, recording and transcription work offline.
 
-Keep Deektator open or minimized. Hold **Alt + Windows**, wait for the **Recording** indicator at the bottom of the screen, then speak. Release either key and wait for the result to copy. Paste with **Ctrl + V**. You can also use **Start recording** and **Stop recording** in the window. If the Windows microphone is unavailable, check **Settings → Privacy & security → Microphone** and allow desktop apps to use it.
+Keep Deektator open or minimized. Click into a text box, hold **Alt + Windows**, wait for the **Recording** indicator at the bottom of the screen, then speak. You can switch to another text box while speaking. When you release the shortcut, the bottom indicator changes to an animated **Transcribing…** message and stays visible until Deektator has copied the new result and sent **Ctrl + V**. Keep the intended text box selected until the indicator disappears and the transcript appears. **Start recording** and **Stop recording** use the same paste behavior; switch to the destination text box after clicking Stop. If the receiving app does not accept the paste, the transcript stays on the clipboard so you can use **Ctrl + V** yourself. If the Windows microphone is unavailable, check **Settings → Privacy & security → Microphone** and allow desktop apps to use it.
+
+The insertion follows keyboard focus, so place the text caret in the destination field; hovering the mouse over a field is not enough. Pasting replaces highlighted text, just like **Ctrl + V**.
+
+To change the dictation shortcut, click **Settings** beside the Deektator title. Choose your modifier keys and an optional additional key, then click **Save**. The change takes effect immediately and is remembered for future launches. You can also turn the global shortcut off or choose **Restore default** to return to **Alt + Windows**. Shortcuts are paused while Settings is open; release all shortcut keys before using the new combination. Preferences are stored in `%LOCALAPPDATA%\Deektator\windows-settings.json`.
 
 The Windows launcher accepts the same model and language options as the Linux launcher. For example, `.\run-deektator.cmd --language auto --download-model` downloads the multilingual model, and `.\run-deektator.cmd --language auto` starts Deektator with language detection.
 
@@ -84,6 +88,8 @@ Add `--install-launcher` to that command to save the keyboard choice in the desk
 - **Other languages.** Download the multilingual model with `./run-deektator --language auto --download-model`, then launch with `./run-deektator --language auto`. You can also set a language explicitly, for example `--language af` for Afrikaans.
 - **Custom models.** Set `--model` to a GGML model path or `--whisper` to a whisper.cpp executable path. On Linux, the app looks in `${XDG_DATA_HOME:-$HOME/.local/share}/deektator` and `../tools/whisper-models` for its default model. The app can also use an existing `ggml-base.bin` in the model directory.
 - **More options.** Use `--keep-fillers` to retain spoken English fillers, `--manual` to start with the global shortcut off, or `--transcribe path/to/audio.wav` to transcribe a file from the terminal. Run `./run-deektator --help` for all options.
+
+Transcription automatically uses more CPU threads on larger processors (up to 16, leaving some capacity for other apps), while keeping the same model. Windows also uses a faster CPU attention path when the installed runtime supports it. To tune CPU usage yourself, launch with `--threads 8`, for example `.\run-deektator.cmd --threads 8`. Lower values can help when other CPU-intensive apps are running; more threads are not always faster.
 
 ## Where your data goes
 
