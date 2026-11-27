@@ -20,6 +20,7 @@ def copy_notices(destination):
         "whisper.cpp.txt": "https://raw.githubusercontent.com/ggml-org/whisper.cpp/v1.8.3/LICENSE",
         "Tcl.txt": "https://raw.githubusercontent.com/tcltk/tcl/core-8-6-14/license.terms",
         "Tk.txt": "https://raw.githubusercontent.com/tcltk/tk/core-8-6-14/license.terms",
+        "PortAudio.txt": "https://raw.githubusercontent.com/PortAudio/portaudio/v19.7.0/LICENSE.txt",
     }
     for filename, url in notices.items():
         with urllib.request.urlopen(url, timeout=30) as response, (destination / filename).open("wb") as output:

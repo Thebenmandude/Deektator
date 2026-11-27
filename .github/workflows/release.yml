@@ -91,7 +91,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          dnf -y install ./artifacts/deektator-*.rpm
+          dnf -y --setopt=install_weak_deps=False install ./artifacts/deektator-*.rpm
           test "$(deektator --version)" = "Deektator $VERSION"
           deektator --download-model
           curl --fail --location --retry 3 https://raw.githubusercontent.com/ggml-org/whisper.cpp/v1.9.6/samples/jfk.wav -o sample.wav
