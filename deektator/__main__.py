@@ -52,20 +52,23 @@ def install_launcher(args, replace=True):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Local Linux desktop dictation.")
+    windows = sys.platform == "win32"
+    parser = argparse.ArgumentParser(description="Offline desktop dictation.")
     parser.add_argument("--model", type=Path, help="path to a whisper.cpp GGML model")
     parser.add_argument("--whisper", help="path to whisper-cli")
     parser.add_argument("--language", default="en", help="Whisper language code or auto (default: en)")
     parser.add_argument("--keep-fillers", action="store_true", help="retain spoken fillers in English transcripts")
-    parser.add_argument("--keyboard", type=Path, help="read Alt + Super from this Linux keyboard event device")
-    parser.add_argument("--source", help="PulseAudio microphone source name")
+    if not windows:
+        parser.add_argument("--keyboard", type=Path, help="read Alt + Super from this Linux keyboard event device")
+    parser.add_argument("--source", help="Windows microphone index or name" if windows else "PulseAudio microphone source name")
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--manual", action="store_true", help="launch without connecting the global shortcut")
     action.add_argument("--transcribe", type=Path, metavar="AUDIO", help="print a local audio file's transcript")
-    action.add_argument("--install-launcher", action="store_true", help="register Deektator in your desktop launcher")
+    if not windows:
+        action.add_argument("--install-launcher", action="store_true", help="register Deektator in your desktop launcher")
     action.add_argument("--download-model", action="store_true", help="download the higher-accuracy Whisper Small model")
     args = parser.parse_args()
-    if args.install_launcher:
+    if not windows and args.install_launcher:
         print(f"Installed {install_launcher(args)}")
         return 0
     engine = Whisper(args.whisper, args.model, args.language, not args.keep_fillers)
@@ -84,6 +87,14 @@ def main():
         except (DictationError, OSError, UnicodeError) as error:
             print(f"Deektator: {error}", file=sys.stderr)
             return 1
+
+    if windows:
+        try:
+            from .windows import run
+        except ImportError as error:
+            print(f"Deektator: run setup-windows.cmd first. {error}", file=sys.stderr)
+            return 1
+        return run(args, engine)
 
     from .desktop import Desktop, Gdk, GLib, Gtk
 

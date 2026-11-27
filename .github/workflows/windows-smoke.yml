@@ -1,0 +1,59 @@
+name: Windows smoke test
+
+on:
+  push:
+    branches: [feature/windows]
+  pull_request:
+    branches: [main]
+    paths:
+      - 'deektator/**'
+      - '*.cmd'
+      - '.github/workflows/windows-smoke.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  windows-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Install Deektator on Windows
+        run: .\setup-windows.cmd
+      - name: Check desktop dependencies
+        run: |
+          @'
+          import tkinter as tk
+          from types import SimpleNamespace
+
+          from deektator.engine import Whisper
+          from deektator.windows import Desktop, DesktopAPI
+
+          api = DesktopAPI()
+          root = tk.Tk()
+          app = Desktop(root, api, SimpleNamespace(manual=True, source=None, model=None), Whisper(None, None, "en", True))
+          try:
+              root.update()
+              foreground = api.foreground()
+              app.indicator.show()
+              root.update()
+              assert app.indicator.window
+              assert api.foreground() == foreground
+              app.transcribed("Clipboard check")
+              assert root.clipboard_get() == "Clipboard check"
+          finally:
+              app.close()
+          '@ | .\.venv\Scripts\python.exe -
+      - name: Transcribe a sample using the bundled Whisper executable
+        run: |
+          Invoke-WebRequest -Uri https://raw.githubusercontent.com/ggml-org/whisper.cpp/v1.8.3/samples/jfk.wav -OutFile sample.wav
+          $text = .\run-deektator.cmd --transcribe sample.wav
+          if ($LASTEXITCODE -ne 0 -or ($text -join ' ') -notmatch 'ask not what your country can do for you') {
+            throw "Unexpected transcript: $text"
+          }
+          Write-Output $text
